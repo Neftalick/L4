@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.projectfloodlight.openflow.protocol.OFFlowStatsReply;
 import org.projectfloodlight.openflow.protocol.OFPortStatsEntry;
 import org.projectfloodlight.openflow.protocol.OFPortStatsReply;
 import org.projectfloodlight.openflow.protocol.OFStatsReply;
@@ -58,6 +59,8 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	
 	private static final String INTERVAL_PORT_STATS_STR = "collectionIntervalPortStatsSeconds";
 	private static final String ENABLED_STR = "enable";
+	private static final String PortTxThreshold = "";
+	private static final String PortRxThreshold = "";
 
 	private static final HashMap<NodePortTuple, SwitchPortBandwidth> portStats = new HashMap<NodePortTuple, SwitchPortBandwidth>();
 	private static final HashMap<NodePortTuple, SwitchPortBandwidth> tentativePortStats = new HashMap<NodePortTuple, SwitchPortBandwidth>();
@@ -126,6 +129,12 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 									U64.ofRaw((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec), 
 									pse.getRxBytes(), pse.getTxBytes())
 									);
+							if(((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec) > Long.parseLong(PortRxThreshold)) {
+								log.warn("Se supero el limite de Rx");
+							}
+							if(((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec) > Long.parseLong(PortTxThreshold)) {
+								log.warn("Se supero el limite de Rx");
+							}
 							
 						} else { /* initialize */
 							tentativePortStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), U64.ZERO, U64.ZERO, pse.getRxBytes(), pse.getTxBytes()));
@@ -135,6 +144,37 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 			}
 		}
 	}
+	
+	protected class FlowStatsCollector implements Runnable {
+		@Override
+		public void run() {
+			flowStats.clear(); // to clear expired flows
+			Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(), OFStatsType.FLOW);
+			for (Entry<DatapathId, List<OFStatsReply>> e : replies.entrySet()) {
+				IOFSwitch sw = switchService.getSwitch(e.getKey());
+				for (OFStatsReply r : e.getValue()) {
+					OFFlowStatsReply psr = (OFFlowStatsReply) r;
+					for (OFFlowStatsEntry pse : psr.getEntries()) {
+						if(sw.getOFFactory().getVersion().compareTo(OFVersion.OF_15) == 0){
+							log.warn("Flow Stats not supported in OpenFlow 1.5.");
+
+						} else {
+							Pair<Match, DatapathId> pair = new Pair<>(pse.getMatch(), e.getKey());
+							flowStats.put(pair,FlowRuleStats.of(
+									e.getKey(),
+									pse.getByteCount(),
+									pse.getPacketCount(),
+									pse.getPriority(),
+									pse.getHardTimeout(),
+									pse.getIdleTimeout(),
+									pse.getDurationSec()));
+						}
+					}
+				}
+			}
+		}
+	}
+
 
 	/**
 	 * Single thread for collecting switch statistics and
@@ -223,6 +263,20 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 			}
 		}
 		log.info("Port statistics collection interval set to {}s", portStatsInterval);
+		if (config.containsKey(PortTxThreshold)) {
+			try {
+				portStatsInterval = Integer.parseInt(config.get(PortTxThreshold).trim());
+			} catch (Exception e) {
+				log.error("Error al importar PortTxThreshold ");
+			}
+		}
+		if (config.containsKey(PortRxThreshold)) {
+			try {
+				portStatsInterval = Integer.parseInt(config.get(PortRxThreshold).trim());
+			} catch (Exception e) {
+				log.error("Error al importar PortRxThreshold ");
+			}
+		}
 	}
 
 	@Override
